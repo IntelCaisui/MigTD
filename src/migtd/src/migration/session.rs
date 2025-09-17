@@ -21,11 +21,17 @@ use tdx_tdcall::{
     TdcallArgs,
 };
 use zerocopy::AsBytes;
+use log::info;
 
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
-use crate::ratls;
+//use crate::ratls;
+use crate::spdm;
+use alloc::sync::Arc;
+use spdmlib::{config::{RECEIVER_BUFFER_SIZE}, responder::ResponderContext};
+use zeroize::Zeroize;
+use core::ops::DerefMut;
 
 const TDCALL_STATUS_SUCCESS: u64 = 0;
 const TDCS_FIELD_MIG_DEC_KEY: u64 = 0x9810_0003_0000_0010;
@@ -398,8 +404,18 @@ pub fn report_status(status: u8, request_id: u64) -> Result<()> {
     Ok(())
 }
 
+pub async fn handle_message(spdm_responder: &mut ResponderContext) -> usize{
+    let raw_packet = Arc::new(Mutex::new([0u8; RECEIVER_BUFFER_SIZE]));
+    let mut raw_packet = raw_packet.lock();
+    let raw_packet = raw_packet.deref_mut();
+    raw_packet.zeroize();
+    let res = spdm_responder.process_message(false, 0, raw_packet).await;
+    0
+}
+
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
+    info!("exchange_msk\n");
     use crate::driver::ticks::with_timeout;
     use core::time::Duration;
 
@@ -459,60 +475,89 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
 
     // Establish TLS layer connection and negotiate the MSK
     if info.is_src() {
+        let mut spdm_requester =
+            spdm::spdm_requester(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+
+        let _res = with_timeout(
+            TLS_TIMEOUT,
+            spdm_requester.send_receive_spdm_version(),
+        ).await;
+        let _res = with_timeout(
+            TLS_TIMEOUT,
+            spdm_requester.send_receive_spdm_capability(),
+        ).await;
+        let _res = with_timeout(
+            TLS_TIMEOUT,
+            spdm_requester.send_receive_spdm_algorithm(),
+        ).await;
         // TLS client
-        let mut ratls_client =
-            ratls::client(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+        //let mut ratls_client =
+        //    ratls::client(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
         // MigTD-S send Migration Session Forward key to peer
-        with_timeout(
-            TLS_TIMEOUT,
-            ratls_client.write(exchange_information.as_bytes()),
-        )
-        .await??;
-        let size = with_timeout(
-            TLS_TIMEOUT,
-            ratls_client.read(remote_information.as_bytes_mut()),
-        )
-        .await??;
-        if size < size_of::<ExchangeInformation>() {
-            return Err(MigrationResult::NetworkError);
-        }
-        #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-        ratls_client.transport_mut().shutdown().await?;
+        //with_timeout(
+        //    TLS_TIMEOUT,
+        //    ratls_client.write(exchange_information.as_bytes()),
+        //)
+        //.await??;
+        //let size = with_timeout(
+        //    TLS_TIMEOUT,
+        //    ratls_client.read(remote_information.as_bytes_mut()),
+        //)
+        //.await??;
+        //if size < size_of::<ExchangeInformation>() {
+        //    return Err(MigrationResult::NetworkError);
+        //}
+        //#[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
+        //ratls_client.transport_mut().shutdown().await?;
 
-        #[cfg(feature = "vmcall-raw")]
-        ratls_client
-            .transport_mut()
-            .shutdown()
-            .await
-            .map_err(|_e| MigrationResult::InvalidParameter)?;
+        //#[cfg(feature = "vmcall-raw")]
+        //ratls_client
+        //    .transport_mut()
+        //    .shutdown()
+        //    .await
+        //    .map_err(|_e| MigrationResult::InvalidParameter)?;
     } else {
+        let mut spdm_responder = spdm::spdm_responder(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+        let _res = with_timeout(
+            TLS_TIMEOUT,
+            handle_message(&mut spdm_responder),
+        ).await;
+        let _res = with_timeout(
+            TLS_TIMEOUT,
+            handle_message(&mut spdm_responder),
+        ).await;
+        let _res = with_timeout(
+            TLS_TIMEOUT,
+            handle_message(&mut spdm_responder),
+        ).await;
+        //}
         // TLS server
-        let mut ratls_server =
-            ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+        //let mut ratls_server =
+        //    ratls::server(transport).map_err(|_| MigrationResult::SecureSessionError)?;
 
-        with_timeout(
-            TLS_TIMEOUT,
-            ratls_server.write(exchange_information.as_bytes()),
-        )
-        .await??;
-        let size = with_timeout(
-            TLS_TIMEOUT,
-            ratls_server.read(remote_information.as_bytes_mut()),
-        )
-        .await??;
-        if size < size_of::<ExchangeInformation>() {
-            return Err(MigrationResult::NetworkError);
-        }
-        #[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
-        ratls_server.transport_mut().shutdown().await?;
+        //with_timeout(
+        //    TLS_TIMEOUT,
+        //    ratls_server.write(exchange_information.as_bytes()),
+        //)
+        //.await??;
+        //let size = with_timeout(
+        //    TLS_TIMEOUT,
+        //    ratls_server.read(remote_information.as_bytes_mut()),
+        //)
+        //.await??;
+        //if size < size_of::<ExchangeInformation>() {
+        //    return Err(MigrationResult::NetworkError);
+        //}
+        //#[cfg(all(not(feature = "virtio-serial"), not(feature = "vmcall-raw")))]
+        //ratls_server.transport_mut().shutdown().await?;
 
-        #[cfg(feature = "vmcall-raw")]
-        ratls_server
-            .transport_mut()
-            .shutdown()
-            .await
-            .map_err(|_e| MigrationResult::InvalidParameter)?;
+        //#[cfg(feature = "vmcall-raw")]
+        //ratls_server
+        //    .transport_mut()
+        //    .shutdown()
+        //    .await
+        //    .map_err(|_e| MigrationResult::InvalidParameter)?;
     }
 
     let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;

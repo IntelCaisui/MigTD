@@ -16,6 +16,14 @@ use lazy_static::lazy_static;
 use rust_std_stub::io;
 use spin::Mutex;
 
+use log::info;
+use async_trait::async_trait;
+use spdmlib::{error::{SpdmResult, SPDM_STATUS_SEND_FAIL}};
+extern crate alloc;
+use alloc::sync::Arc;
+use alloc::boxed::Box;
+use spdmlib::common::SpdmDeviceIo;
+
 type Result<T = ()> = core::result::Result<T, VmcallRawError>;
 
 lazy_static! {
@@ -47,6 +55,34 @@ impl AsyncRead for VmcallRaw {
 impl AsyncWrite for VmcallRaw {
     async fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.send(buf, 0).await.map_err(|e| e.into())
+    }
+}
+
+#[async_trait]
+impl SpdmDeviceIo for VmcallRaw {
+    async fn send(&mut self, buffer: Arc<&[u8]>) -> SpdmResult {
+        info!("vm call raw device send {:02x}: {:02x?}\n", buffer.len(), buffer.as_ref());
+        self.send(buffer.as_ref(), 0).await.map_err(|_| SPDM_STATUS_SEND_FAIL)?;
+        Ok(())
+    }
+
+    async fn receive(
+        &mut self,
+        read_buffer: Arc<Mutex<&mut [u8]>>,
+        _timeout: usize,
+    ) -> core::result::Result<usize, usize> {
+        let mut read_buffer = read_buffer.lock();
+        let mut len = 0;
+        while len == 0 {
+            len = self.recv(read_buffer.as_mut(), 0).await.map_err(|_| 0 as usize)?;
+            info!("vm call raw device receive len: {:02x}\n", len);
+        }
+        info!("vm call raw device receive {:02x}: {:02x?}\n", len, &read_buffer[..len]);
+        Ok(len)
+    }
+
+    async fn flush_all(&mut self) -> SpdmResult {
+        Ok(())
     }
 }
 

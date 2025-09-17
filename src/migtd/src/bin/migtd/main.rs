@@ -44,6 +44,7 @@ pub fn runtime_main() {
     do_measurements();
 
     migration::event::register_callback();
+    info!("do measurements done\n");
 
     // Query the capability of VMM
     #[cfg(not(feature = "vmcall-raw"))]
@@ -107,6 +108,7 @@ fn get_ca_and_measure(event_log: &mut [u8]) {
 }
 
 fn handle_pre_mig() {
+    info!("handle_pre_mig\n");
     #[cfg(any(feature = "vmcall-interrupt", feature = "vmcall-raw"))]
     const MAX_CONCURRENCY_REQUESTS: usize = 16;
     #[cfg(not(any(feature = "vmcall-interrupt", feature = "vmcall-raw")))]
@@ -139,6 +141,8 @@ fn handle_pre_mig() {
             }
         }
     });
+
+    info!("handle_pre_mig 2\n");
 
     loop {
         // Poll the async runtime to execute tasks

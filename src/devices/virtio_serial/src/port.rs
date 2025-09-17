@@ -9,6 +9,15 @@ use rust_std_stub::io::{self, Read, Write};
 
 use crate::{Result, VirtioSerialError, SERIAL_DEVICE};
 
+use log::info;
+use async_trait::async_trait;
+use spdmlib::{error::{SpdmResult, SPDM_STATUS_SEND_FAIL}};
+extern crate alloc;
+use alloc::sync::Arc;
+use alloc::boxed::Box;
+use spdmlib::common::SpdmDeviceIo;
+use spin::Mutex;
+
 const DEFAULT_TIMEOUT: u32 = 8000;
 
 pub struct VirtioSerialPort {
@@ -18,7 +27,7 @@ pub struct VirtioSerialPort {
 
 impl Write for VirtioSerialPort {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.send(buf).map_err(|e| e.into())
+        self.send_data(buf).map_err(|e| e.into())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -47,7 +56,7 @@ impl AsyncRead for VirtioSerialPort {
 
 impl AsyncWrite for VirtioSerialPort {
     async fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        poll_fn(|_cx| match self.send(buf) {
+        poll_fn(|_cx| match self.send_data(buf) {
             Ok(size) => core::task::Poll::Ready(Ok(size)),
             Err(e) => match e {
                 VirtioSerialError::NotReady => core::task::Poll::Pending,
@@ -55,6 +64,44 @@ impl AsyncWrite for VirtioSerialPort {
             },
         })
         .await
+    }
+}
+
+#[async_trait]
+impl SpdmDeviceIo for VirtioSerialPort {
+    async fn send(&mut self, buffer: Arc<&[u8]>) -> SpdmResult {
+        info!("vm call raw device send {:02x}: {:02x?}\n", buffer.len(), buffer.as_ref());
+        let res: io::Result<usize> = poll_fn(|_cx| match self.send_data(buffer.as_ref()) {
+            Ok(size) => core::task::Poll::Ready(Ok(size)),
+            Err(e) => match e {
+                VirtioSerialError::NotReady => core::task::Poll::Pending,
+                _ => core::task::Poll::Ready(Err(e.into())),
+            },
+        })
+        .await;
+        res.map_err(|_| SPDM_STATUS_SEND_FAIL)?;
+        Ok(())
+    }
+
+    async fn receive(
+        &mut self,
+        read_buffer: Arc<Mutex<&mut [u8]>>,
+        _timeout: usize,
+    ) -> core::result::Result<usize, usize> {
+        let mut read_buffer = read_buffer.lock();
+        let res: io::Result<usize> = poll_fn(|_cx| match self.recv(read_buffer.as_mut()) {
+            Ok(size) => core::task::Poll::Ready(Ok(size)),
+            Err(e) => match e {
+                VirtioSerialError::NotReady => core::task::Poll::Pending,
+                _ => core::task::Poll::Ready(Err(e.into())),
+            },
+        })
+        .await;
+        Ok(res.unwrap())
+    }
+
+    async fn flush_all(&mut self) -> SpdmResult {
+        Ok(())
     }
 }
 
@@ -82,7 +129,7 @@ impl VirtioSerialPort {
             .free_port(self.port_id)
     }
 
-    pub fn send(&self, data: &[u8]) -> Result<usize> {
+    pub fn send_data(&self, data: &[u8]) -> Result<usize> {
         SERIAL_DEVICE
             .lock()
             .get_mut()

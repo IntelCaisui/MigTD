@@ -15,6 +15,14 @@ use lazy_static::lazy_static;
 use rust_std_stub::io;
 use spin::Mutex;
 
+use log::info;
+use async_trait::async_trait;
+use spdmlib::{error::{SpdmResult, SPDM_STATUS_SEND_FAIL}};
+extern crate alloc;
+use alloc::sync::Arc;
+use alloc::boxed::Box;
+use spdmlib::common::SpdmDeviceIo;
+
 type Result<T = ()> = core::result::Result<T, VsockError>;
 
 // Timeouts in millisecond
@@ -78,6 +86,61 @@ impl AsyncRead for VsockStream {
 impl AsyncWrite for VsockStream {
     async fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.send(buf, 0).await.map_err(|e| e.into())
+    }
+}
+
+//unsafe impl Send for VsockStream {}
+//unsafe impl Sync for VsockStream {}
+//
+//#[async_trait]
+//impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> SpdmDeviceIo for T {
+//    async fn send(&mut self, buffer: Arc<&[u8]>) -> SpdmResult {
+//        info!("device send {:02x}: {:02x?}\n", buffer.len(), buffer.as_ref());
+//        self.write(buffer.as_ref()).await.map_err(|_| SPDM_STATUS_SEND_FAIL)?;
+//        Ok(())
+//    }
+//
+//    async fn receive(
+//        &mut self,
+//        read_buffer: Arc<Mutex<&mut [u8]>>,
+//        _timeout: usize,
+//    ) -> core::result::Result<usize, usize> {
+//        let mut read_buffer = read_buffer.lock();
+//        let len = self.read(read_buffer.as_mut()).await.map_err(|_| 0 as usize)?;
+//        info!("device receive {:02x}: {:02x?}\n", len, &read_buffer[..len]);
+//        Ok(len)
+//    }
+//
+//    async fn flush_all(&mut self) -> SpdmResult {
+//        Ok(())
+//    }
+//}
+
+#[async_trait]
+impl SpdmDeviceIo for VsockStream {
+    async fn send(&mut self, buffer: Arc<&[u8]>) -> SpdmResult {
+        info!("vsock device send {:02x}: {:02x?}\n", buffer.len(), buffer.as_ref());
+        self.send(buffer.as_ref(), 0).await.map_err(|_| SPDM_STATUS_SEND_FAIL)?;
+        Ok(())
+    }
+
+    async fn receive(
+        &mut self,
+        read_buffer: Arc<Mutex<&mut [u8]>>,
+        _timeout: usize,
+    ) -> core::result::Result<usize, usize> {
+        let mut read_buffer = read_buffer.lock();
+        let mut len = 0;
+        while len == 0 {
+            len = self.recv(read_buffer.as_mut(), 0).await.map_err(|_| 0 as usize)?;
+            info!("vsock device receive len: {:02x}\n", len);
+        }
+        info!("vsock device receive {:02x}: {:02x?}\n", len, &read_buffer[..len]);
+        Ok(len)
+    }
+
+    async fn flush_all(&mut self) -> SpdmResult {
+        Ok(())
     }
 }
 
@@ -253,6 +316,8 @@ impl VsockStream {
     }
 
     pub async fn send(&mut self, buf: &[u8], _flags: u32) -> Result<usize> {
+        info!("vsock send\n");
+        info!("vsock send buffer {:02x}: {:02x?}\n", buf.len(), buf);
         let state = self.state;
         if state != State::Establised {
             return Err(VsockError::Illegal);
@@ -281,6 +346,7 @@ impl VsockStream {
     }
 
     pub async fn recv(&mut self, buf: &mut [u8], _flags: u32) -> Result<usize> {
+        info!("vsock recv\n");
         let state = self.state;
         if state != State::Establised {
             return Err(VsockError::Illegal);
@@ -299,6 +365,8 @@ impl VsockStream {
         }
 
         let mut used = 0;
+        info!("vsock recv data_queue.is_empty {:02x?}\n", self.data_queue.is_empty());
+        info!("vsock recv buf.len {:02x?}\n", buf.len());
         while !self.data_queue.is_empty() && used < buf.len() {
             let head = self.data_queue.front_mut().unwrap();
             let free = buf.len() - used;
@@ -313,6 +381,7 @@ impl VsockStream {
             }
         }
 
+        info!("vsock recv buffer {:02x}: {:02x?}\n", used, &buf[..used]);
         Ok(used)
     }
 

@@ -18,6 +18,10 @@ tdx-tdcall = { path = "../../../deps/td-shim/tdx-tdcall" }
 td-payload = { path = "../../../deps/td-shim/td-payload", features = ["tdx"] }
 td-shim-interface = { path = "../../../deps/td-shim/td-shim-interface", optional = true }
 
+spdmlib = {path = "../../../deps/spdm-rs/spdmlib", default-features = false}
+codec = {path= "../../../deps/spdm-rs/codec"}
+async-trait = "0.1.71"
+
 [features]
 vmcall-raw = ["td-shim-interface"]
 fuzz = []
