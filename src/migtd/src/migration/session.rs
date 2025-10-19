@@ -29,7 +29,10 @@ use zerocopy::AsBytes;
 type Result<T> = core::result::Result<T, MigrationResult>;
 
 use super::{data::*, *};
+#[cfg(not(feature = "spdm_attestation"))]
 use crate::ratls;
+#[cfg(feature = "spdm_attestation")]
+use crate::spdm;
 
 const TDCALL_STATUS_SUCCESS: u64 = 0;
 #[cfg(feature = "vmcall-raw")]
@@ -98,10 +101,10 @@ lazy_static! {
     pub static ref REQUESTS: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
 }
 
-struct ExchangeInformation {
-    min_ver: u16,
-    max_ver: u16,
-    key: MigrationSessionKey,
+pub struct ExchangeInformation {
+    pub min_ver: u16,
+    pub max_ver: u16,
+    pub key: MigrationSessionKey,
 }
 
 impl Default for ExchangeInformation {
@@ -114,6 +117,7 @@ impl Default for ExchangeInformation {
     }
 }
 
+#[cfg(not(feature = "spdm_attestation"))]
 impl ExchangeInformation {
     fn as_bytes(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
@@ -700,9 +704,12 @@ async fn pre_session_data_exchange<T: AsyncRead + AsyncWrite + Unpin>(
 
 #[cfg(feature = "main")]
 pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
+    #[cfg(not(feature = "spdm_attestation"))]
     use crate::driver::ticks::with_timeout;
+    #[cfg(not(feature = "spdm_attestation"))]
     use core::time::Duration;
 
+    #[cfg(not(feature = "spdm_attestation"))]
     const TLS_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds
 
     #[cfg(feature = "policy_v2")]
@@ -758,13 +765,14 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
     };
 
     let mut remote_information = ExchangeInformation::default();
-    let mut exchange_information = exchange_info(&info)?;
+    let mut exchange_information = exchange_info(info)?;
 
     // Exchange policy firstly because of the message size limitation of TLS protocol
     #[cfg(feature = "policy_v2")]
     let remote_policy = pre_session_data_exchange(&mut transport).await?;
 
     // Establish TLS layer connection and negotiate the MSK
+    #[cfg(not(feature = "spdm_attestation"))]
     if info.is_src() {
         // TLS client
         let mut ratls_client = ratls::client(
@@ -828,6 +836,29 @@ pub async fn exchange_msk(info: &MigrationInformation) -> Result<()> {
             .shutdown()
             .await
             .map_err(|_e| MigrationResult::InvalidParameter)?;
+    }
+
+    #[cfg(feature = "spdm_attestation")]
+    if info.is_src() {
+        let mut spdm_requester =
+            spdm::spdm_requester(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+
+        let _res = spdm::spdm_requester_transfer_msk(
+            &mut spdm_requester,
+            &exchange_information,
+            &mut remote_information,
+        )
+        .await;
+    } else {
+        let mut spdm_responder =
+            spdm::spdm_responder(transport).map_err(|_| MigrationResult::SecureSessionError)?;
+
+        let _res = spdm::spdm_responder_transfer_msk(
+            &mut spdm_responder,
+            &exchange_information,
+            &mut remote_information,
+        )
+        .await;
     }
 
     let mig_ver = cal_mig_version(info.is_src(), &exchange_information, &remote_information)?;
